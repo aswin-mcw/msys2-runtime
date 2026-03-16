@@ -68,6 +68,21 @@ TARGET_FILES= \
 	x86_64/wmempcpy.S
 endif
 
+NEWLIB_STRING_DIR= ../../newlib/libc/string
+
+if TARGET_AARCH64
+TARGET_FILES= \
+	$(NEWLIB_STRING_DIR)/bcopy.c \
+	aarch64/fastcwd.cc \
+	$(NEWLIB_STRING_DIR)/memchr.c \
+	$(NEWLIB_STRING_DIR)/mempcpy.c \
+	$(NEWLIB_STRING_DIR)/memset.c \
+	$(NEWLIB_STRING_DIR)/swab.c \
+	$(NEWLIB_STRING_DIR)/wmemcpy.c \
+	$(NEWLIB_STRING_DIR)/wmemmove.c \
+	$(NEWLIB_STRING_DIR)/wmempcpy.c
+endif
+
 LIB_FILES= \
 	lib/_cygwin_crt0_common.cc \
 	lib/atexit.c \
@@ -544,6 +559,10 @@ proc_CFLAGS=-DUSERNAME="\"$(USER)\"" -DHOSTNAME="\"$(HOSTNAME)\"" \
 
 dtable_CFLAGS=-fcheck-new
 
+if TARGET_AARCH64
+exceptions_CFLAGS = -mnop-fun-dllimport
+endif
+
 #
 # libraries and installed objects
 #
@@ -626,8 +645,11 @@ $(NEW_DLL_NAME): $(LDSCRIPT) libdll.a $(VERSION_OFILES) $(LIBSERVER)\
 # msys-2.0 import library
 toolopts=--cpu=@target_cpu@ --ar=@AR@ --as=@AS@ --nm=@NM@ --objcopy=@OBJCOPY@
 
-$(DEF_FILE): scripts/gendef cygwin.din
-	$(AM_V_GEN)$(srcdir)/scripts/gendef --cpu=@target_cpu@ --output-def=$(DEF_FILE) $(srcdir)/cygwin.din
+ARCH_DIN = $(srcdir)/@target_cpu@/cygwin.din
+
+$(DEF_FILE): scripts/gendef cygwin.din $(wildcard $(ARCH_DIN))
+	$(AM_V_GEN)$(srcdir)/scripts/gendef --cpu=@target_cpu@ --output-def=$(DEF_FILE) \
+	  $(wildcard $(ARCH_DIN)) $(srcdir)/cygwin.din
 
 sigfe.s: $(DEF_FILE) tlsoffsets
 	@[ -s $@ ] || \

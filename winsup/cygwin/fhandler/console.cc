@@ -35,6 +35,25 @@ details. */
 #include "winf.h"
 #include "psapi.h"
 
+#include <windows.h>
+#include <wincon.h>  
+typedef HRESULT (WINAPI *pAllocConsoleWithOptions)(
+    const ALLOC_CONSOLE_OPTIONS*,
+    ALLOC_CONSOLE_RESULT*
+);
+HRESULT CallAllocConsoleWithOptions(const ALLOC_CONSOLE_OPTIONS* opt,
+                                    ALLOC_CONSOLE_RESULT* res)
+{
+    HMODULE h = GetModuleHandleW(L"kernel32.dll");
+    if (!h)
+        return HRESULT_FROM_WIN32(GetLastError());
+    auto fn = (pAllocConsoleWithOptions)
+        GetProcAddress(h, "AllocConsoleWithOptions");
+    if (!fn)
+        return HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED);
+    return fn(opt, res);
+}
+
 /* Don't make this bigger than NT_MAX_PATH as long as the temporary buffer
    is allocated using tmp_pathbuf!!! */
 #define CONVERT_LIMIT NT_MAX_PATH
@@ -4432,6 +4451,17 @@ hook_conemu_cygwin_connector()
   DO_HOOK (NULL, GetProcAddress);
 }
 
+bool
+fhandler_console::create_invisible_console ()
+{
+  ALLOC_CONSOLE_OPTIONS options = { ALLOC_CONSOLE_MODE_NO_WINDOW, FALSE, 0 };
+  ALLOC_CONSOLE_RESULT res;
+  HRESULT ret = CallAllocConsoleWithOptions (&options, &res);
+  SetParent (GetConsoleWindow (), HWND_MESSAGE);
+  termios_printf ("%X = AllocConsoleWithOptions (), %u", ret, res);
+  invisible_console = (ret == S_OK);
+  return invisible_console;
+}
 /* Ugly workaround to create invisible console required since Windows 7.
 
    First try to just attach to any console which may have started this

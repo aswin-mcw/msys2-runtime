@@ -659,10 +659,17 @@ dll_info (const char *path, HANDLE fh, int lvl, int recurse)
       puts (verbose ? " (not x86_64 dll)" : "\n");
       return;
     }
-  int base_off = 108;
+    int base_off = 108;
+    #elif defined (__aarch64__)
+    if (arch != IMAGE_FILE_MACHINE_ARM64)
+    {
+      puts (verbose ? " (not aarch64 dll)" : "\n");
+      return;
+    }
+    int base_off = 112;
 #else
 #error unimplemented for this target
-#endif
+#endif 
   int opthdr_ofs = pe_header_offset + 4 + 20;
   unsigned short v[6];
 

@@ -28,8 +28,6 @@ realdirpath() {
 winsup_srcdir="$(realdirpath $srcdir)"
 target_builddir="$(realdirpath ..)"
 
-AC_NO_EXECUTABLES
-
 AC_PROG_INSTALL
 AC_PROG_MKDIR_P
 AC_PROG_CC
@@ -103,12 +101,16 @@ DLL_ENTRY="dll_entry"
 
 case "$target_cpu" in
    x86_64)	;;
+   aarch64)	;;
    *)		AC_MSG_ERROR([Invalid target processor "$target_cpu"]) ;;
 esac
 
 AC_SUBST(DLL_ENTRY)
 
+AM_CONDITIONAL(BUILD_X86_64, [test $build_cpu = "x86_64"])
+AM_CONDITIONAL(BUILD_AARCH64, [test $build_cpu = "aarch64"])
 AM_CONDITIONAL(TARGET_X86_64, [test $target_cpu = "x86_64"])
+AM_CONDITIONAL(TARGET_AARCH64, [test $target_cpu = "aarch64"])
 
 AC_ARG_ENABLE(doc,
 	      [AS_HELP_STRING([--disable-doc], [do not build documentation])],,
@@ -135,9 +137,9 @@ if test -z "$XMLTO"; then
 fi
 
 if test "x$with_cross_bootstrap" != "xyes"; then
-    AC_CHECK_PROGS(MINGW_CXX, ${target_cpu}-w64-mingw32-g++)
+    AC_CHECK_PROGS(MINGW_CXX, ${build_cpu}-w64-mingw32-g++)
     test -n "$MINGW_CXX" || AC_MSG_ERROR([no acceptable MinGW g++ found in \$PATH])
-    AC_CHECK_PROGS(MINGW_CC, ${target_cpu}-w64-mingw32-gcc)
+    AC_CHECK_PROGS(MINGW_CC, ${build_cpu}-w64-mingw32-gcc)
     test -n "$MINGW_CC" || AC_MSG_ERROR([no acceptable MinGW gcc found in \$PATH])
 
     AC_CHECK_PROGS(MINGW32_CC, i686-w64-mingw32-gcc)
@@ -149,12 +151,21 @@ AM_CONDITIONAL(CROSS_BOOTSTRAP, [test "x$with_cross_bootstrap" != "xyes"])
 
 AC_EXEEXT
 
-AC_ARG_ENABLE([dumper],
-	      [AS_HELP_STRING([--disable-dumper], [do not build the 'dumper' utility])],
-	      [build_dumper=$enableval],
-	      [build_dumper=yes])
+case "$target_cpu" in
+  x86_64)
+    AC_ARG_ENABLE([dumper],
+          [build_dumper=$enableval],
+          [build_dumper=yes])
+    AM_CONDITIONAL(BUILD_DUMPER, [test "x$build_dumper" = "xyes"])
+    ;;
+  aarch64)
+    AC_ARG_ENABLE([dumper],
+          [AS_HELP_STRING([--enable-dumper], [build the 'dumper' utility])],
+          [build_dumper=yes])
+    AM_CONDITIONAL(BUILD_DUMPER, [test "x$build_dumper" = "xno"])
+    ;;
+esac
 
-AM_CONDITIONAL(BUILD_DUMPER, [test "x$build_dumper" = "xyes"])
 
 # libbfd.a doesn't have a pkgconfig file, so we guess what it's dependencies
 # are, based on what's present in the build environment
