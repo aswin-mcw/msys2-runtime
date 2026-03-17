@@ -4612,7 +4612,10 @@ fhandler_console::need_invisible (bool force)
 	  AllocConsole ();
 	  invisible_console = true;
 	}
-      b = create_invisible_console_workaround (force);
+    if (wincap.has_alloc_console_with_options ())
+	b = create_invisible_console ();
+    else
+	b = create_invisible_console_workaround (force);
     }
 
   debug_printf ("invisible_console %d", invisible_console);
