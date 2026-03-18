@@ -154,12 +154,12 @@ isquote (char c)
 
 /* Step over a run of characters delimited by quotes */
 static /*__inline*/ char *
-quoted (char *cmd, int winshell, int glob)
+quoted (char *cmd, int winshell)
 {
   char *p;
   char quote = *cmd;
 
-  if (!winshell || !glob)
+  if (!winshell)
     {
       char *p;
       strcpy (cmd, cmd + 1);
@@ -169,8 +169,8 @@ quoted (char *cmd, int winshell, int glob)
     }
 
   const char *s = quote == '\'' ? "'" : "\\\"";
-  /* This must have been run from a Windows shell and globbing is enabled,
-     so preserve quotes for globify to play with later. */
+  /* This must have been run from a Windows shell, so preserve
+     quotes for globify to play with later. */
   while (*cmd && *++cmd)
     if ((p = strpbrk (cmd, s)) == NULL)
       {
@@ -237,19 +237,9 @@ globify (char *word, char **&argv, int &argc, int &argvlen)
 	while (*++s && *s != quote)
 	  {
 	    mbstate_t mbs = { 0 };
-	    /* This used to be:
 	    if (dos_spec || *s != '\\')
-	      // nothing
+	      /* nothing */;
 	    else if (s[1] == quote || s[1] == '\\')
-	      s++;
-	    With commit message:
-	       dcrt0.cc (globify): Don't use \ quoting when apparently quoting a DOS path
-	       spec, even within a quoted string.
-	    But that breaks the "literal quotes" part of '"C:/test.exe SOME_VAR=\"literal quotes\""'
-	    giving:    'C:/test.exe SOME_VAR=\literal quotes\' (with \'s between each character)
-	    instead of 'C:/test.exe SOME_VAR="literal quotes"' (with \'s between each character)
-	    */
-	    if (*s == '\\' && (s[1] == quote || s[1] == '\\'))
 	      s++;
 	    *p++ = '\\';
 	    size_t cnt = isascii (*s) ? 1 : mbrtowi (NULL, s, MB_CUR_MAX, &mbs);
@@ -302,7 +292,7 @@ globify (char *word, char **&argv, int &argc, int &argvlen)
 /* Build argv, argc from string passed from Windows.  */
 
 static void
-build_argv (char *cmd, char **&argv, int &argc, int winshell, int glob)
+build_argv (char *cmd, char **&argv, int &argc, int winshell)
 {
   int argvlen = 0;
   int nesting = 0;		// monitor "nesting" from insert_file
@@ -310,8 +300,6 @@ build_argv (char *cmd, char **&argv, int &argc, int winshell, int glob)
   argc = 0;
   argvlen = 0;
   argv = NULL;
-
-  debug_printf ("cmd = '%s', winshell = %d, glob = %d", cmd, winshell, glob);
 
   /* Scan command line until there is nothing left. */
   while (*cmd)
@@ -338,7 +326,7 @@ build_argv (char *cmd, char **&argv, int &argc, int winshell, int glob)
 		 a Cygwin process, or if the word starts with a '@'.
 		 In this case, the insert_file function needs an unquoted
 		 DOS filename and globbing isn't performed anyway. */
-	      cmd = quoted (cmd, winshell && argc > 0 && *word != '@', glob);
+	      cmd = quoted (cmd, winshell && argc > 0 && *word != '@');
 	    }
 	  if (issep (*cmd))	// End of argument if space
 	    break;
@@ -364,7 +352,7 @@ build_argv (char *cmd, char **&argv, int &argc, int winshell, int glob)
 	}
 
       /* Add word to argv file after (optional) wildcard expansion. */
-      if (!glob || !argc || !globify (word, argv, argc, argvlen))
+      if (!winshell || !argc || !globify (word, argv, argc, argvlen))
 	{
 	  debug_printf ("argv[%d] = '%s'", argc, word);
 	  argv[argc++] = word;
@@ -531,7 +519,7 @@ get_cygwin_startup_info ()
   child_info *res = (child_info *) si.lpReserved2;
 
   if (si.cbReserved2 < EXEC_MAGIC_SIZE || !res
-      || res->intro != PROC_MAGIC_GENERIC || res->magic != (CHILD_INFO_MAGIC ^ MSYS2_RUNTIME_COMMIT_HEX))
+      || res->intro != PROC_MAGIC_GENERIC || res->magic != CHILD_INFO_MAGIC)
     {
       strace.activate (false);
       res = NULL;
@@ -919,7 +907,6 @@ dll_crt0_1 (void *)
       /* Scan the command line and build argv.  Expand wildcards if not
 	 called from another cygwin process. */
       build_argv (line, __argv, __argc,
-		  NOTSTATE (myself, PID_CYGPARENT),
 		  NOTSTATE (myself, PID_CYGPARENT) && allow_glob);
 
       /* Convert argv[0] to posix rules if it's currently blatantly
@@ -1043,7 +1030,7 @@ _dll_crt0 ()
 	  PVOID stackaddr = create_new_main_thread_stack (allocationbase);
 	  if (stackaddr)
 	    {
-#ifdef __x86_64__
+#if defined(__x86_64__)
 	      /* Set stack pointer to new address.  Set frame pointer to
 	         stack pointer and subtract 32 bytes for shadow space. */
 	      __asm__ ("\n\
@@ -1051,6 +1038,13 @@ _dll_crt0 ()
 		       movq  %%rsp, %%rbp  \n\
 		       subq  $32,%%rsp     \n"
 		       : : [ADDR] "r" (stackaddr));
+#elif defined(__aarch64__)
+	      /* Set stack and frame pointers to new address. */
+	      __asm__ ("\n\
+		       mov fp, %[ADDR] \n\
+		       mov sp, fp      \n"
+		       : : [ADDR] "r" (stackaddr)
+		       : "memory");
 #else
 #error unimplemented for this target
 #endif
@@ -1090,11 +1084,7 @@ dll_crt0 (per_process *uptr)
    See winsup/testsuite/cygload for an example of how to use cygwin1.dll
    from MSVC and non-cygwin MinGW applications.  */
 extern "C" void
-#ifdef __MSYS__
-msys_dll_init ()
-#else
 cygwin_dll_init ()
-#endif
 {
   static int _fmode;
 
