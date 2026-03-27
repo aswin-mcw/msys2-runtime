@@ -152,6 +152,9 @@ frok::child (volatile char * volatile here)
   clear_procimptoken ();
   cygheap->user.reimpersonate ();
 
+  setup_user_rlimits (false);
+  ch.inherit_process_rlimits ();
+
 #ifdef DEBUGGING
   if (GetEnvironmentVariableA ("FORKDEBUG", NULL, 0))
     try_to_debug ();
@@ -250,6 +253,17 @@ frok::parent (volatile char * volatile stack_here)
      systems. */
   c_flags |= CREATE_UNICODE_ENVIRONMENT;
 
+  /* Despite all our executables having a valid manifest, "mintty" still
+     triggers the "Program Compatibility Assistant (PCA) Service" for
+     some reason, maybe due to some heuristics in PCA.
+     We use job objects for rlimits extensively, so we still have to let
+     child processes breakaway from job.  Otherwise we can't add processes
+     running in different terminals to an already existing per-user job.
+     The check for this situation is now done in setup_user_rlimits()
+     called from dll_crt0_1(). */
+  if (enforce_breakaway_from_job)
+    c_flags |= CREATE_BREAKAWAY_FROM_JOB;
+
   errmsg = NULL;
   hchild = NULL;
 
@@ -316,6 +330,8 @@ frok::parent (volatile char * volatile stack_here)
     }
   debug_printf ("stack - bottom %p, top %p, addr %p, guardsize %ly",
 		ch.stackbase, ch.stacklimit, ch.stackaddr, ch.guardsize);
+
+  ch.collect_process_rlimits ();
 
   PROCESS_INFORMATION pi;
   STARTUPINFOW si;
@@ -384,6 +400,7 @@ frok::parent (volatile char * volatile stack_here)
 	{
 	  this_errno = geterrno_from_win_error ();
 	  error ("CreateProcessW failed for '%W'", myself->progname);
+	  ch.silentfail (true);
 	  dlls.release_forkables ();
 	  memset (&pi, 0, sizeof (pi));
 	  goto cleanup;
@@ -665,8 +682,10 @@ dofork (void **proc, bool *with_forkables)
     ischild = !!setjmp (grouped.ch.jmp);
 
     volatile char * volatile stackp;
-#ifdef __x86_64__
+#if defined(__x86_64__)
     __asm__ volatile ("movq %%rsp,%0": "=r" (stackp));
+#elif defined(__aarch64__)
+    __asm__ volatile ("mov %0, sp" : "=r" (stackp));
 #else
 #error unimplemented for this target
 #endif
