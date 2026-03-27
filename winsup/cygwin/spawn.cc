@@ -286,19 +286,6 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
   bool rc;
   int res = -1;
 
-  /* Environment variable MSYS2_ARG_CONV_EXCL contains a list
-     of ';' separated argument prefixes to pass un-modified.
-     A value of * means don't convert any arguments. */
-  char* msys2_arg_conv_excl_env = getenv("MSYS2_ARG_CONV_EXCL");
-  char* msys2_arg_conv_excl = NULL;
-  size_t msys2_arg_conv_excl_count = 0;
-  if (msys2_arg_conv_excl_env)
-    {
-      msys2_arg_conv_excl = (char*)alloca (strlen(msys2_arg_conv_excl_env)+1);
-      strcpy (msys2_arg_conv_excl, msys2_arg_conv_excl_env);
-      msys2_arg_conv_excl_count = string_split_delimited (msys2_arg_conv_excl, ';');
-    }
-
   /* Check if we have been called from exec{lv}p or spawn{lv}p and mask
      mode to keep only the spawn mode. */
   bool p_type_exec = !!(mode & _P_PATH_TYPE_EXEC);
@@ -390,20 +377,6 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
 	  moreinfo->argc = newargv.argc;
 	  moreinfo->argv = newargv;
 	}
-      else
-	{
-	  for (int i = 0; i < newargv.argc; i++)
-	    {
-	      //convert argv to win32
-	      int newargvlen = strlen (newargv[i]);
-	      char *tmpbuf = (char *)malloc (newargvlen + 1);
-	      memcpy (tmpbuf, newargv[i], newargvlen + 1);
-	      tmpbuf = arg_heuristic_with_exclusions(tmpbuf, msys2_arg_conv_excl, msys2_arg_conv_excl_count);
-	      debug_printf("newargv[%d] = %s", i, newargv[i]);
-	      newargv.replace (i, tmpbuf);
-	      free (tmpbuf);
-	    }
-	}
       if ((wincmdln || !real_path.iscygexec ())
 	   && !cmd.fromargv (newargv, real_path.get_win32 (),
 			     real_path.iscygexec ()))
@@ -441,36 +414,16 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
       if (winjitdebug && !real_path.iscygexec ())
 	c_flags |= CREATE_DEFAULT_ERROR_MODE;
 
-      /* We're adding the CREATE_BREAKAWAY_FROM_JOB flag here to workaround
-	 issues with the "Program Compatibility Assistant (PCA) Service".
-	 For some reason, when starting long running sessions from mintty(*),
-	 the affected svchost.exe process takes more and more memory and at one
-	 point takes over the CPU.  At this point the machine becomes
-	 unresponsive.  The only way to get back to normal is to stop the
-	 entire mintty session, or to stop the PCA service.  However, a process
-	 which is controlled by PCA is part of a compatibility job, which
-	 allows child processes to break away from the job.  This helps to
-	 avoid this issue.
-
-	 First we call IsProcessInJob.  It fetches the information whether or
-	 not we're part of a job 20 times faster than QueryInformationJobObject.
-
-	 (*) Note that this is not mintty's fault.  It has just been observed
-	 with mintty in the first place.  See the archives for more info:
-	 http://cygwin.com/ml/cygwin-developers/2012-02/msg00018.html */
-      JOBOBJECT_BASIC_LIMIT_INFORMATION jobinfo;
-      BOOL is_in_job;
-
-      if (IsProcessInJob (GetCurrentProcess (), NULL, &is_in_job)
-	  && is_in_job
-	  && QueryInformationJobObject (NULL, JobObjectBasicLimitInformation,
-				     &jobinfo, sizeof jobinfo, NULL)
-	  && (jobinfo.LimitFlags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK
-				    | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)))
-	{
-	  debug_printf ("Add CREATE_BREAKAWAY_FROM_JOB");
-	  c_flags |= CREATE_BREAKAWAY_FROM_JOB;
-	}
+      /* Despite all our executables having a valid manifest, "mintty" still
+	 triggers the "Program Compatibility Assistant (PCA) Service" for
+	 some reason, maybe due to some heuristics in PCA.
+	 We use job objects for rlimits extensively, so we still have to let
+	 child processes breakaway from job.  Otherwise we can't add processes
+	 running in different terminals to an already existing per-user job.
+	 The check for this situation is now done in setup_user_rlimits()
+	 called from dll_crt0_1(). */
+      if (enforce_breakaway_from_job)
+	c_flags |= CREATE_BREAKAWAY_FROM_JOB;
 
       if (mode == _P_DETACH)
 	c_flags |= DETACHED_PROCESS;
@@ -535,13 +488,10 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
       bool switch_user = ::cygheap->user.issetuid ()
 			 && (::cygheap->user.saved_uid
 			     != ::cygheap->user.real_uid);
-      bool keep_posix = (iscmd (argv[0], "strace.exe")
-			|| iscmd (argv[0], "strace")) ? true : real_path.iscygexec ();
       moreinfo->envp = build_env (envp, envblock, moreinfo->envc,
 				  real_path.iscygexec (),
 				  switch_user ? ::cygheap->user.primary_token ()
-					      : NULL,
-				  keep_posix);
+					      : NULL);
       if (!moreinfo->envp || !envblock)
 	{
 	  set_errno (E2BIG);
@@ -600,6 +550,8 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
       if (mode != _P_OVERLAY)
 	SetHandleInformation (my_wr_proc_pipe, HANDLE_FLAG_INHERIT, 0);
       parent_winpid = GetCurrentProcessId ();
+
+      collect_process_rlimits ();
 
       PSECURITY_ATTRIBUTES sa = (PSECURITY_ATTRIBUTES) alloca (1024);
       if (!sec_user_nih (sa, cygheap->user.sid (),
@@ -703,6 +655,8 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
 		  debug_printf ("Desktop: %W", si.lpDesktop);
 		}
 	    }
+
+	  c_flags |= CREATE_BREAKAWAY_FROM_JOB;
 
 	  rc = CreateProcessAsUserW (::cygheap->user.primary_token (),
 			       runpath,		/* image name w/ full path */
@@ -907,7 +861,7 @@ child_info_spawn::worker (const char *prog_arg, const char *const *argv,
 	  if (term_spawn_worker.need_cleanup ())
 	    {
 	      LONG prev_sigExeced = sigExeced;
-	      while (WaitForSingleObject (pi.hProcess, 100) == WAIT_TIMEOUT)
+	      while (cygwait (pi.hProcess, 100) != WAIT_OBJECT_0)
 		/* If child process does not exit in predetermined time
 		   period, the process does not seem to be terminated by
 		   the signal sigExeced. Therefore, clear sigExeced here. */
