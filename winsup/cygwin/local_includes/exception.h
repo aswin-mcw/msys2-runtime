@@ -24,7 +24,6 @@ details. */
     .rva 1b, 2f, 2f, 2f							\n\
     .seh_code								\n")
 #endif
-
 class exception
 {
   static EXCEPTION_DISPOSITION myfault (EXCEPTION_RECORD *, exception_list *,

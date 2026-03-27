@@ -33,7 +33,7 @@ enum child_status
 #define EXEC_MAGIC_SIZE sizeof(child_info)
 
 /* Change this value if you get a message indicating that it is out-of-sync. */
-#define CURR_CHILD_INFO_MAGIC 0x3c5c4429U
+#define CURR_CHILD_INFO_MAGIC 0x1052d96bU
 
 #include "pinfo.h"
 struct cchildren
@@ -68,6 +68,7 @@ public:
   DWORD exit_code;	// process exit code
   static int retry_count;// retry count;
   sigset_t sigmask;
+  struct rlimit rlimit_as;
 
   child_info (unsigned, child_info_types, bool);
   child_info (): subproc_ready (NULL), parent (NULL) {}
@@ -96,6 +97,10 @@ public:
     else
       flag &= ~_CI_SILENTFAIL;
   }
+
+  /* resource.cc */
+  void collect_process_rlimits ();
+  void inherit_process_rlimits ();
 };
 
 class mount_info;
@@ -196,6 +201,9 @@ extern child_info_spawn ch_spawn;
 
 #define have_execed ch_spawn.has_execed ()
 #define have_execed_cygwin ch_spawn.has_execed_cygwin ()
+
+/* resource.cc */
+extern bool setup_user_rlimits (bool);
 
 extern "C" {
 extern child_info *child_proc_info;

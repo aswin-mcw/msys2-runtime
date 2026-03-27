@@ -1982,6 +1982,7 @@ class fhandler_termios: public fhandler_base
   virtual off_t lseek (off_t, int);
   pid_t tcgetsid ();
   virtual int fstat (struct stat *buf);
+  int tcflow (int);
 
   fhandler_termios (void *) {}
 
@@ -2146,12 +2147,12 @@ class dev_console
   char cons_rabuf[40];  // cannot get longer than char buf[40] in char_command
   char *cons_rapoi;
   bool cursor_key_app_mode;
-  bool disable_master_thread;
+  volatile bool disable_master_thread;
   tty::cons_mode curr_input_mode;
   tty::cons_mode curr_output_mode;
   DWORD prev_input_mode;
   DWORD prev_output_mode;
-  bool master_thread_suspended;
+  volatile bool master_thread_suspended;
   int num_processed; /* Number of input events in the current input buffer
 			already processed by cons_master_thread(). */
 
@@ -2226,6 +2227,7 @@ private:
 /* Input calls */
   int igncr_enabled ();
   void set_cursor_maybe ();
+  static bool create_invisible_console ();
   static bool create_invisible_console_workaround (bool force);
   static console_state *open_shared_console (HWND, HANDLE&, bool&);
   static void fix_tab_position (HANDLE h, DWORD owner);
@@ -2276,6 +2278,7 @@ private:
   int tcflush (int);
   int tcsetattr (int a, const struct termios *t);
   int tcgetattr (struct termios *t);
+  int tcdrain ();
 
   int ioctl (unsigned int cmd, void *);
   int init (HANDLE, DWORD, mode_t, int64_t = 0);
@@ -2394,6 +2397,7 @@ class fhandler_pty_common: public fhandler_termios
   DWORD __acquire_output_mutex (const char *fn, int ln, DWORD ms);
   void __release_output_mutex (const char *fn, int ln);
 
+  int tcdrain ();
   int close (int flag = -1);
   off_t lseek (off_t, int);
   bool bytes_available (DWORD& n);

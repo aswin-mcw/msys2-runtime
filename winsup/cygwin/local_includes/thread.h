@@ -31,7 +31,7 @@ class fast_mutex
 {
 public:
   fast_mutex () :
-    tid (0), counter_self (0), lock_counter (0), win32_obj_id (0)
+    lock_counter (0), win32_obj_id (0)
   {
   }
 
@@ -55,29 +55,17 @@ public:
 
   void lock ()
   {
-    if (!locked () && InterlockedIncrement (&lock_counter) != 1)
+    if (InterlockedIncrement (&lock_counter) != 1)
       cygwait (win32_obj_id, cw_infinite, cw_sig | cw_sig_restart);
-    tid = GetCurrentThreadId ();
-    counter_self++;
   }
 
   void unlock ()
   {
-    if (!locked () || --counter_self > 0)
-      return;
-    tid = 0;
     if (InterlockedDecrement (&lock_counter))
       ::SetEvent (win32_obj_id);
   }
 
-  bool locked ()
-  {
-    return tid == GetCurrentThreadId ();
-  }
-
 private:
-  DWORD tid;
-  int counter_self;
   LONG lock_counter;
   HANDLE win32_obj_id;
 };
@@ -233,13 +221,12 @@ public:
   ~pthread_key ();
   static void fixup_before_fork ()
   {
-    keys.for_each (&pthread_key::_fixup_before_fork);
+    for_each (&pthread_key::_fixup_before_fork);
   }
 
   static void fixup_after_fork ()
   {
-    keys.fixup_after_fork ();
-    keys.for_each (&pthread_key::_fixup_after_fork);
+    for_each (&pthread_key::_fixup_after_fork);
   }
 
   static void run_all_destructors ()
@@ -258,21 +245,39 @@ public:
     for (int i = 0; i < PTHREAD_DESTRUCTOR_ITERATIONS; ++i)
       {
 	iterate_dtors_once_more = false;
-	keys.for_each (&pthread_key::run_destructor);
+	for_each (&pthread_key::run_destructor);
 	if (!iterate_dtors_once_more)
 	  break;
       }
   }
 
-  /* List support calls */
-  class pthread_key *next;
 private:
-  static List<pthread_key> keys;
+  int key_idx;
+  static class keys_list {
+    LONG64 seq;
+    LONG64 busy_cnt;
+    pthread_key *key;
+    static bool used (LONG64 seq1) { return (seq1 & 3) != 0; }
+    static bool ready (LONG64 seq1) { return (seq1 & 3) == 2; }
+  public:
+    keys_list () : seq (0), busy_cnt (INT64_MIN), key (NULL) {}
+    friend class pthread_key;
+  } keys[PTHREAD_KEYS_MAX];
   void _fixup_before_fork ();
   void _fixup_after_fork ();
   void (*destructor) (void *);
   void run_destructor ();
   void *fork_buf;
+  static void for_each (void (pthread_key::*callback) ()) {
+    for (size_t cnt = 0; cnt < PTHREAD_KEYS_MAX; cnt++)
+      {
+	if (!keys_list::ready (keys[cnt].seq))
+	  continue;
+	if (InterlockedIncrement64 (&keys[cnt].busy_cnt) > 0)
+	  (keys[cnt].key->*callback) ();
+	InterlockedDecrement64 (&keys[cnt].busy_cnt);
+      }
+  }
 };
 
 class pthread_attr: public verifyable_object
