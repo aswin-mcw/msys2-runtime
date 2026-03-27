@@ -28,25 +28,8 @@ details. */
 #include "ntdll.h"
 #include "exception.h"
 #include "posix_timer.h"
+#include "register.h"
 #include "gcc_seh.h"
-#include "cygwin/exit_process.h"
-
-/* Define macros for CPU-agnostic register access.  The _CX_foo
-   macros are for access into CONTEXT, the _MC_foo ones for access into
-   mcontext. The idea is to access the registers in terms of their job,
-   not in terms of their name on the given target. */
-#ifdef __x86_64__
-#define _CX_instPtr	Rip
-#define _CX_stackPtr	Rsp
-#define _CX_framePtr	Rbp
-/* For special register access inside mcontext. */
-#define _MC_retReg	rax
-#define _MC_instPtr	rip
-#define _MC_stackPtr	rsp
-#define _MC_uclinkReg	rbx	/* MUST be callee-saved reg */
-#else
-#error unimplemented for this target
-#endif
 
 #define CALL_HANDLER_RETRY_OUTER 10
 #define CALL_HANDLER_RETRY_INNER 10
@@ -231,7 +214,7 @@ cygwin_exception::dump_exception ()
 	}
     }
 
-#ifdef __x86_64__
+#if defined(__x86_64__)
   if (exception_name)
     small_printf ("Exception: %s at rip=%012X\r\n", exception_name, ctx->Rip);
   else
@@ -251,6 +234,31 @@ cygwin_exception::dump_exception ()
   small_printf ("cs=%04x ds=%04x es=%04x fs=%04x gs=%04x ss=%04x\r\n",
 		ctx->SegCs, ctx->SegDs, ctx->SegEs, ctx->SegFs,
 		ctx->SegGs, ctx->SegSs);
+#elif defined(__aarch64__)
+  if (exception_name)
+    small_printf ("Exception: %s at pc=%012X\r\n", exception_name, ctx->Pc);
+  else
+    small_printf ("Signal %d at pc=%012X\r\n", e->ExceptionCode, ctx->Pc);
+  small_printf ("x0=%016X x1=%016X x2=%016X x3=%016X\r\n",
+		ctx->X0, ctx->X1, ctx->X2, ctx->X3);
+  small_printf ("x4=%016X x5=%016X x6=%016X x7=%016X\r\n",
+		ctx->X4, ctx->X5, ctx->X6, ctx->X7);
+  small_printf ("x8=%016X x9=%016X x10=%016X x11=%016X\r\n",
+		ctx->X8, ctx->X9, ctx->X10, ctx->X11);
+  small_printf ("x12=%016X x13=%016X x14=%016X x15=%016X\r\n",
+		ctx->X12, ctx->X13, ctx->X14, ctx->X15);
+  small_printf ("x16=%016X x17=%016X x18=%016X x19=%016X\r\n",
+		ctx->X16, ctx->X17, ctx->X18, ctx->X19);
+  small_printf ("x20=%016X x21=%016X x22=%016X x23=%016X\r\n",
+		ctx->X20, ctx->X21, ctx->X22, ctx->X23);
+  small_printf ("x24=%016X x25=%016X x26=%016X x27=%016X\r\n",
+		ctx->X24, ctx->X25, ctx->X26, ctx->X27);
+  small_printf ("x28=%016X fp=%016X lr=%016X sp=%016X\r\n",
+		ctx->X28, ctx->Fp, ctx->Lr, ctx->Sp);
+  small_printf ("program=%W, pid %u, thread %s\r\n",
+		myself->progname, myself->pid, mythreadname ());
+  small_printf ("fpcr=%016X fpsr=%016X\r\n",
+		ctx->Fpcr, ctx->Fpsr);
 #else
 #error unimplemented for this target
 #endif
@@ -529,14 +537,14 @@ int exec_prepared_command (PWCHAR command)
   PWCHAR rawenv = GetEnvironmentStringsW () ;
   for (PWCHAR p = rawenv; *p != L'\0'; p = wcschr (p, L'\0') + 1)
     {
-      if (wcsncmp (p, L"MSYS=", wcslen (L"MSYS=")) == 0)
+      if (wcsncmp (p, L"CYGWIN=", wcslen (L"CYGWIN=")) == 0)
 	{
 	  PWCHAR q = wcsstr (p, L"error_start") ;
 	  /* replace 'error_start=...' with '_rror_start=...' */
 	  if (q)
 	    {
 	      *q = L'_' ;
-	      SetEnvironmentVariableW (L"MSYS", p + wcslen (L"MSYS=")) ;
+	      SetEnvironmentVariableW (L"CYGWIN", p + wcslen (L"CYGWIN=")) ;
 	    }
 	  break;
 	}
@@ -610,11 +618,15 @@ EXCEPTION_DISPOSITION
 exception::myfault (EXCEPTION_RECORD *e, exception_list *frame, CONTEXT *in,
 		    PDISPATCHER_CONTEXT dispatch)
 {
+  if (IS_UNWINDING(e->ExceptionFlags)) {
+    return ExceptionContinueSearch;
+  }
+  
   PSCOPE_TABLE table = (PSCOPE_TABLE) dispatch->HandlerData;
-  RtlUnwindEx (frame,
-	       (char *) dispatch->ImageBase + table->ScopeRecord[0].JumpTarget,
-	       e, 0, in, dispatch->HistoryTable);
-  /* NOTREACHED, make gcc happy. */
+  void *jump_target = ((char *) dispatch->ImageBase) + table->ScopeRecord[0].JumpTarget;
+  
+  CONTEXT c;
+  RtlUnwindEx (frame, jump_target, e, 0, &c, dispatch->HistoryTable);
   return ExceptionContinueSearch;
 }
 
@@ -1500,6 +1512,23 @@ _cygtls::handle_SIGCONT ()
   InterlockedAnd ((LONG *) &myself->process_state, ~PID_STOPPED);
 }
 
+inline static bool
+is_stop_or_cont (int sig)
+{
+  switch (sig)
+    {
+    case SIGSTOP:
+    case SIGTSTP:
+    case SIGTTIN:
+    case SIGTTOU:
+    case SIGCONT:
+      return true;
+    default:
+      break;
+    }
+  return false;
+}
+
 int
 sigpacket::process ()
 {
@@ -1653,27 +1682,12 @@ exit_sig:
   thissig.sa_flags &= ~SA_ONSTACK;
 
 dosig:
-  if (have_execed)
+  if (have_execed && (ch_spawn.iscygwin () || !is_stop_or_cont (si.si_signo)))
     {
-      switch (si.si_signo)
-        {
-        case SIGUSR1:
-        case SIGUSR2:
-        case SIGCONT:
-        case SIGSTOP:
-        case SIGTSTP:
-        case SIGTTIN:
-        case SIGTTOU:
-          system_printf ("Suppressing signal %d to win32 process (pid %u)",
-              (int)si.si_signo, (unsigned int)GetProcessId(ch_spawn));
-          goto done;
-        default:
-          sigproc_printf ("terminating captive process");
-          if (::cygheap->ctty)
-	    ::cygheap->ctty->cleanup_before_exit ();
-          rc = exit_process_tree (ch_spawn, 128 + (sigExeced = si.si_signo));
-          goto done;
-        }
+      sigproc_printf ("terminating captive process");
+      if (::cygheap->ctty)
+	::cygheap->ctty->cleanup_before_exit ();
+      TerminateProcess (ch_spawn, sigExeced = si.si_signo);
     }
   /* Dispatch to the appropriate function. */
   sigproc_printf ("signal %d, signal handler %p", si.si_signo, handler);
@@ -1687,7 +1701,6 @@ done:
 }
 
 #if defined(__x86_64__) || defined(__aarch64__)
-
 static void
 altstack_wrapper (int sig, siginfo_t *siginfo, ucontext_t *sigctx,
 		  void (*handler) (int, siginfo_t *, void *))
@@ -1738,7 +1751,6 @@ altstack_wrapper (int sig, siginfo_t *siginfo, ucontext_t *sigctx,
 	teb->Tib.StackLimit = old_limit;
     }
 }
-
 #endif
 
 int
@@ -1801,11 +1813,7 @@ _cygtls::call_signal_handler ()
 	      __unwind_single_frame ((PCONTEXT) &context1.uc_mcontext);
 	      if (stackptr > stack)
 		{
-#ifdef __x86_64__
-		  context1.uc_mcontext.rip = retaddr ();
-#else
-#error unimplemented for this target
-#endif
+		  context1.uc_mcontext._MC_instPtr = retaddr ();
 		}
 	    }
 
@@ -1923,50 +1931,50 @@ _cygtls::call_signal_handler ()
 		       [WRAPPER] "o" (altstack_wrapper)
 		   : "memory");
 #elif defined(__aarch64__)
-    __asm__ ("\n\
-      mov x9, %[NEW_SP]   // Load alt stack into x9	\n\
-      sub x9, x9, #0x80   // Make room on alt stack	\n\
-            // for clobbered regs and \n\
-            // required shadow space	\n\
-      str   x0, [x9, #0x20]   //   Save clobbered regs	\n\
-      str   x1, [x9, #0x28] \n\
-      str   x2, [x9, #0x30] \n\
-      str   x3, [x9, #0x38] \n\
-      str   x4, [x9, #0x40] \n\
-      str   x5, [x9, #0x48] \n\
-      str   x6, [x9, #0x50] \n\
-      str   x7, [x9, #0x58] \n\
-      str   fp, [x9, #0x60] \n\
-      mov   x10, sp         // copy sp into x10 \n\
-      str   x10, [x9, #0x68] \n\
-	    str   x30, [x9, #0x70]  // Save link register	\n\
-      mov   x0, %[SIG]  //  thissig to 1st arg reg  \n\
-      mov   x1, %[SI]       // &thissi to 2nd arg reg  \n\
-      mov   x2, %[CTX]    //  thiscontext to 3rd arg reg	\n\
-      mov   x3, %[FUNC]   //  thisfunc to x3		\n\
-      mov   x4, %[WRAPPER] //  wrapper address to x4	\n\
-      mov   sp, x9  // Move alt stack into rsp	\n\
-      blr   x4  // Call wrapper		\n\
-      mov   x9, sp   //  Restore clobbered register \n\
-	    ldr  x30, [x9, #0x70]  // Restore link register	\n\
-      ldr  x10, [x9, #0x68] \n\
-      ldr  fp, [x9, #0x60] \n\
-      ldr  x7, [x9, #0x58] \n\
-      ldr  x6, [x9, #0x50] \n\
-      ldr  x5, [x9, #0x48] \n\
-      ldr  x4, [x9, #0x40] \n\
-      ldr  x3, [x9, #0x38] \n\
-      ldr  x2, [x9, #0x30] \n\
-      ldr  x1, [x9, #0x28] \n\
-      ldr  x0, [x9, #0x20] \n\
-	    mov   sp, x10           // Restore stack pointer	\n"
-      : : [NEW_SP]	"r" (new_sp),
-          [SIG]	"r" (thissig),
-          [SI]	"r" (&thissi),
-          [CTX]	"r" (thiscontext),
-          [FUNC]	"r" (thisfunc),
-          [WRAPPER] "r" (altstack_wrapper)
-      : "memory", "x0","x1","x2","x3","x4","x5","x6","x7","x9","x10","x29","x30");
+	  __asm__ ("\n\
+		   mov	x9, %[NEW_SP]		// Load alt stack into x9	\n\
+		   sub	x9, x9, #0x60		// Make room on alt stack	\n\
+						// for clobbered regs		\n\
+		   str	x0, [x9, #0x00]		// Save clobbered regs		\n\
+		   str	x1, [x9, #0x08]						\n\
+		   str	x2, [x9, #0x10]						\n\
+		   str	x3, [x9, #0x18]						\n\
+		   str	x4, [x9, #0x20]						\n\
+		   str	x5, [x9, #0x28]						\n\
+		   str	x6, [x9, #0x30]						\n\
+		   str	x7, [x9, #0x38]						\n\
+		   str	fp, [x9, #0x40]						\n\
+		   mov	x10, sp			// Copy sp into x10 for saving	\n\
+		   str	x10, [x9, #0x48]					\n\
+		   str	x30, [x9, #0x50]	// Save link register		\n\
+		   mov	x0, %[SIG]		// thissig to 1st arg reg	\n\
+		   mov	x1, %[SI]		// &thissi to 2nd arg reg	\n\
+		   mov	x2, %[CTX]		// thiscontext to 3rd arg reg	\n\
+		   mov	x3, %[FUNC]		// thisfunc to x3		\n\
+		   mov	x4, %[WRAPPER]		// wrapper address to x4	\n\
+		   mov	sp, x9			// Move alt stack into sp	\n\
+		   blr	x4			// Call wrapper			\n\
+		   mov	x9, sp			// Restore clobbered regs	\n\
+		   ldr	x30, [x9, #0x50]	// Restore link register	\n\
+		   ldr	x10, [x9, #0x48]					\n\
+		   ldr	fp,  [x9, #0x40]					\n\
+		   ldr	x7,  [x9, #0x38]					\n\
+		   ldr	x6,  [x9, #0x30]					\n\
+		   ldr	x5,  [x9, #0x28]					\n\
+		   ldr	x4,  [x9, #0x20]					\n\
+		   ldr	x3,  [x9, #0x18]					\n\
+		   ldr	x2,  [x9, #0x10]					\n\
+		   ldr	x1,  [x9, #0x08]					\n\
+		   ldr	x0,  [x9, #0x00]					\n\
+		   mov	sp,  x10		// Restore stack pointer	\n"
+		   : : [NEW_SP]	 "r" (new_sp),
+		       [SIG]	 "r" (thissig),
+		       [SI]	 "r" (&thissi),
+		       [CTX]	 "r" (thiscontext),
+		       [FUNC]	 "r" (thisfunc),
+		       [WRAPPER] "r" (altstack_wrapper)
+		   : "memory", "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+		     "x9", "x10", "x29", "x30");
 #else
 #error unimplemented for this target
 #endif
@@ -2108,24 +2116,24 @@ __cont_link_context:			\n\
 	.seh_endproc			\n\
 	");
 #elif defined(__aarch64__)
-__asm__(
-"  .global __cont_link_context            \n\
-  .seh_proc __cont_link_context          \n\
-__cont_link_context:                     \n\
-  .seh_endprologue                       \n\
-  mov   sp, x19                          \n\
-  ldr   x0, [sp]                         \n\
-  mov   x4, sp                           \n\
-  and   x4, x4, #0xFFFFFFFFFFFFFFF0      \n\
-  mov   sp, x4                           \n\
-  cbz   x0, 1f                           \n\
-  bl    setcontext                       \n\
-  mov   w0, #0xff                        \n\
-1:                                       \n\
-  bl    cygwin_exit                      \n\
-  nop                                   \n\
-  .seh_endproc                           \n"
-);
+__asm__ ("					\n\
+	.global	__cont_link_context		\n\
+	.seh_proc __cont_link_context		\n\
+__cont_link_context:				\n\
+	.seh_endprologue			\n\
+	mov	sp, x19				\n\
+	ldr	x0, [sp]			\n\
+	mov	x4, sp				\n\
+	and	x4, x4, #0xfffffffffffffff0	\n\
+	mov	sp, x4				\n\
+	cbz	x0, 1f				\n\
+	bl	setcontext			\n\
+	mov	w0, #0xff			\n\
+1:						\n\
+	bl	cygwin_exit			\n\
+	nop					\n\
+	.seh_endproc				\n"
+	);
 #else
 #error unimplemented for this target
 #endif
@@ -2133,18 +2141,18 @@ __cont_link_context:                     \n\
 /* makecontext is modelled after GLibc's makecontext.  The stack from uc_stack
    is prepared so that it starts with a pointer to the linked context uc_link,
    followed by the arguments to func, and finally at the bottom the "return"
-   address set to __cont_link_context.  
-   
-   x86_64: In the ucp context, rbx is set to point to the stack address where 
-   the pointer to uc_link is stored. The requirement to make this work is that 
+   address set to __cont_link_context.
+
+   x86_64: In the ucp context, rbx is set to point to the stack address where
+   the pointer to uc_link is stored.  The requirement to make this work is that
    rbx is a callee-saved register per the ABI.
-   
+
    ARM64: In the ucp context, x19 is set to point to the stack address where
-   the pointer to uc_link is stored. The requirement is that x19 is a 
+   the pointer to uc_link is stored.  The requirement is that x19 is a
    callee-saved register per the ARM64 ABI.
-   
-   If any function is called which doesn't follow the ABI conventions, e.g. 
-   assembler code, this method will break. But that's ok. */
+
+   If any function is called which doesn't follow the ABI conventions, e.g.
+   assembler code, this method will break.  But that's ok. */
 
 extern "C" void
 makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
@@ -2152,54 +2160,55 @@ makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
   extern void __cont_link_context (void);
   uintptr_t *sp;
   va_list ap;
-  
+
 #if defined(__x86_64__)
   /* x86_64: Arguments beyond the first 4 go on the stack.
      However, we allocate shadow space for all args including register args. */
   int stack_args = argc;
-  
+
 #elif defined(__aarch64__)
   /* ARM64: Arguments beyond the first 8 go on the stack.
      We only allocate stack space for args beyond registers. */
   int stack_args = (argc > 8) ? (argc - 8) : 0;
-  
+
 #else
 #error unimplemented for this target
 #endif
 
   /* Initialize sp to the top of the stack. */
   sp = (uintptr_t *) ((uintptr_t) ucp->uc_stack.ss_sp + ucp->uc_stack.ss_size);
-  
+
 #if defined(__x86_64__)
-  /* x86_64: Subtract slots for all arguments + uc_link pointer + return address */
+  /* x86_64: Subtract slots for all arguments + uc_link pointer
+     and return address.  */
   sp -= (stack_args + 1);  /* argc + 1 for uc_link */
-  /* Align to 16 bytes */
+  /* Align to 16 bytes. */
   sp = (uintptr_t *) ((uintptr_t) sp & ~0xfUL);
-  /* Subtract one more slot for the return address */
+  /* Subtract one more slot for the return address. */
   --sp;
   /* Set return address to the trampoline function __cont_link_context. */
   sp[0] = (uintptr_t) __cont_link_context;
-  
+
 #elif defined(__aarch64__)
-  /* ARM64: Subtract slots for stack arguments + uc_link pointer */
+  /* ARM64: Subtract slots for stack arguments + uc_link pointer. */
   sp -= (stack_args + 1);  /* stack_args + 1 for uc_link */
-  /* ARM64 requires 16-byte alignment at public interfaces */
+  /* ARM64 requires 16-byte alignment at public interfaces. */
   sp = (uintptr_t *) ((uintptr_t) sp & ~0xfUL);
-  
+
 #endif
 
   /* Fetch arguments and store them.
      x86_64:
      - Store first four args in the AMD64 ABI arg registers (rcx, rdx, r8, r9).
-     - Note that the stack is not short by these four register args. The
+     - Note that the stack is not short by these four register args.  The
        reason is the shadow space for these regs required by the AMD64 ABI.
      - The definition of makecontext only allows for "int" sized arguments to
-       func, 32 bit, likely for historical reasons. However, the argument
+       func, 32 bit, likely for historical reasons.  However, the argument
        slots on x86_64 are 64 bit anyway, so we can fetch and store the args
        as 64 bit values, and func can request 64 bit args without violating
-       the definition. This potentially allows porting 32 bit applications
+       the definition.  This potentially allows porting 32 bit applications
        providing pointer values to func without additional porting effort.
-     
+
      ARM64:
      - Store first eight args in ARM64 ABI arg registers (x0-x7).
      - Arguments beyond 8 go on the stack.
@@ -2228,7 +2237,7 @@ makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
           sp[i + 1] = va_arg (ap, uintptr_t);
           break;
         }
-        
+
 #elif defined(__aarch64__)
       switch (i)
         {
@@ -2257,7 +2266,7 @@ makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
           ucp->uc_mcontext.x7 = va_arg (ap, uintptr_t);
           break;
         default:
-          /* Stack arguments beyond the first 8 registers */
+          /* Stack arguments beyond the first 8 registers. */
           sp[i - 8] = va_arg (ap, uintptr_t);
           break;
         }
@@ -2266,13 +2275,14 @@ makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
   va_end (ap);
 
 #if defined(__x86_64__)
-  /* Store pointer to uc_link at sp[argc + 1] (after return address and args) */
+  /* Store pointer to uc_link at sp[argc + 1], after return address
+     and args.  */
   sp[argc + 1] = (uintptr_t) ucp->uc_link;
-  
+
 #elif defined(__aarch64__)
-  /* Store pointer to uc_link at the top of our allocated area */
+  /* Store pointer to uc_link at the top of our allocated area. */
   sp[stack_args] = (uintptr_t) ucp->uc_link;
-  
+
 #endif
 
   /* Last but not least set the register in the context at ucp so that a
@@ -2281,20 +2291,20 @@ makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
      - Set stack pointer to the just computed stack pointer value.
      - Set Cygwin-specific uclink register to the address of the pointer
        to uc_link.
-     
+
      x86_64: uclink register is rbx (callee-saved)
      ARM64:  uclink register is x19 (callee-saved) */
 
   ucp->uc_mcontext._MC_instPtr = (uint64_t) func;
   ucp->uc_mcontext._MC_stackPtr = (uint64_t) sp;
-  
+
 #if defined(__x86_64__)
   ucp->uc_mcontext._MC_uclinkReg = (uint64_t) (sp + argc + 1);
-  
+
 #elif defined(__aarch64__)
-  /* Set LR to __cont_link_context for ARM64 (used as return address) */
+  /* Set LR to __cont_link_context for ARM64 (used as return address). */
   ucp->uc_mcontext.lr = (uint64_t) __cont_link_context;
   ucp->uc_mcontext._MC_uclinkReg = (uint64_t) (sp + stack_args);
-  
+
 #endif
 }
