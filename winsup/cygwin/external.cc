@@ -141,7 +141,7 @@ create_winenv (const char * const *env)
   int unused_envc;
   PWCHAR envblock = NULL;
   char **envp = build_env (env ?: environ, envblock, unused_envc, false,
-			   NULL, true);
+			   NULL);
   PWCHAR p = envblock;
 
   if (envp)
