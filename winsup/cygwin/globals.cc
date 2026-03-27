@@ -28,6 +28,7 @@ PWCHAR windows_directory = windows_directory_buf + 4;
 UINT windows_directory_length;
 UNICODE_STRING windows_directory_path;
 WCHAR global_progname[NT_MAX_PATH];
+bool NO_COPY enforce_breakaway_from_job;
 
 /* program exit the program */
 
@@ -57,7 +58,6 @@ enum winsym_t
   WSYM_nativestrict,
   WSYM_nfs,
   WSYM_sysfile,
-  WSYM_deepcopy
 };
 
 exit_states NO_COPY exit_state;
@@ -70,11 +70,10 @@ bool allow_glob = true;
 bool ignore_case_with_glob;
 bool pipe_byte = true; /* Default to byte mode so that C# programs work. */
 bool reset_com;
-bool wincmdln = true;
-winsym_t allow_winsymlinks = WSYM_deepcopy;
+bool wincmdln;
+winsym_t allow_winsymlinks = WSYM_default;
 bool disable_pcon;
 bool winjitdebug = false;
-bool nativeinnerlinks = true;
 
 /* Taken from BSD libc:
    This variable is zero until a process has created a pthread.  It is used
@@ -175,8 +174,8 @@ extern "C" {
    /* unused */ {},
    /* cxx_malloc */ &default_cygwin_cxx_malloc,
    /* hmodule */ NULL,
-   /* api_major */ 0,
-   /* api_minor */ 0,
+   /* api_major */ CYGWIN_VERSION_API_MAJOR,
+   /* api_minor */ CYGWIN_VERSION_API_MINOR,
    /* unused2 */ {},
    /* posix_memalign */ posix_memalign,
    /* pseudo_reloc_start */ NULL,
