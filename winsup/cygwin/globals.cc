@@ -200,4 +200,4 @@ extern "C" {
 
 int NO_COPY __api_fatal_exit_val = 1;
 
-extern "C" __typeof(program_invocation_short_name) __progname __attribute__((alias("program_invocation_short_name")));
+EXPORT_ALIAS (program_invocation_short_name, __progname)

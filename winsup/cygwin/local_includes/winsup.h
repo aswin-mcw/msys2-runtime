@@ -21,7 +21,7 @@ details. */
 #define NO_COPY_INIT __attribute__((section(".data_cygwin_nocopy")))
 
 #ifdef __cplusplus
-#define EXPORT_ALIAS(sym,symalias) extern "C" __typeof (sym) symalias __attribute__ ((alias(#sym)));
+#define EXPORT_ALIAS(sym,symalias) __typeof (sym) symalias __attribute__ ((alias(#sym)));
 #else
 #define EXPORT_ALIAS(sym,symalias) __typeof (sym) symalias __attribute__ ((alias(#sym)));
 #endif
