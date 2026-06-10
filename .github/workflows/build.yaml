@@ -32,6 +32,7 @@ jobs:
           (cd winsup && ./autogen.sh)
           ./configure \
             --disable-dependency-tracking \
+            --disable-dumper \
             --with-msys2-runtime-commit="$GITHUB_SHA" \
             CFLAGS="-D__MSYS__" \
             CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
