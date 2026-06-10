@@ -150,7 +150,10 @@ jobs:
         mkdir build install &&
         (cd winsup; ./autogen.sh) &&
         cd build &&
-        ../configure --prefix=$(realpath $(pwd)/../install) -v &&
+        ../configure --prefix=$(realpath $(pwd)/../install) -v 
+        CFLAGS="-D__MSYS__"
+        CXXFLAGS="-D__MSYS__"
+        CCASFLAGS="-D__MSYS__" &&
         export MAKEFLAGS=-j$(nproc) &&
         make &&
         make install &&
