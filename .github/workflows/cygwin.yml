@@ -131,6 +131,8 @@ jobs:
           make,
           mingw64-${{ matrix.pkgarch }}-gcc-g++,
           mingw64-${{ matrix.pkgarch }}-zlib,
+          mingw64-i686-gcc-g++,
+          mingw64-i686-zlib,
           patch,
           perl,
           python39-lxml,
