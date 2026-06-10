@@ -20,12 +20,23 @@ jobs:
           update: true
           install: msys2-devel base-devel autotools cocom diffutils gcc gettext-devel libiconv-devel make mingw-w64-cross-crt mingw-w64-cross-gcc mingw-w64-cross-zlib perl zlib-devel xmlto docbook-xsl
 
+      - name: Patch unused variable warning
+        shell: msys2 {0}
+        run: |
+          sed -i 's/int count_path_items = 0;/int count_path_items = 0; (void)count_path_items;/' winsup/utils/mingw/cygcheck.cc
+
+
       - name: Build
         shell: msys2 {0}
         run: |
           (cd winsup && ./autogen.sh)
-          ./configure --disable-dependency-tracking --with-msys2-runtime-commit="$GITHUB_SHA"
-          make -j8
+          ./configure \
+            --disable-dependency-tracking \
+            --with-msys2-runtime-commit="$GITHUB_SHA" \
+            CFLAGS="-D__MSYS__" \
+            CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
+            CCASFLAGS="-D__MSYS__"
+          make -j8 MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
 
       - name: Install
         shell: msys2 {0}
