@@ -154,6 +154,7 @@ jobs:
         CFLAGS="-D__MSYS__"
         CXXFLAGS="-D__MSYS__"
         CCASFLAGS="-D__MSYS__" &&
+        MINGW_CXXFLAGS="-Wno-unused-but-set-variable" &&
         export MAKEFLAGS=-j$(nproc) &&
         make &&
         make install &&
