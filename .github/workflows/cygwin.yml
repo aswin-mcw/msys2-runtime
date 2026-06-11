@@ -162,6 +162,18 @@ jobs:
         (cd */newlib; make install-info install-man)
       shell: C:\cygwin\bin\bash.exe --noprofile --norc -eo pipefail '{0}'
 
+    # Check crt0.o is a SEPARATE step at correct indentation
+    - name: Check crt0.o symbol
+      run: |
+        nm /usr/lib/crt0.o | grep -i crt0
+        # If output shows cygwin_crt0, recompile with __MSYS__
+        if nm /usr/lib/crt0.o | grep -q "cygwin_crt0"; then
+          echo "WARNING: crt0.o calls cygwin_crt0, recompiling with __MSYS__..."
+          gcc -D__MSYS__ -c ../winsup/cygwin/crt0.c -o /usr/lib/crt0.o
+        fi
+      shell: C:\cygwin\bin\bash.exe --noprofile --norc -eo pipefail '{0}'
+
+
     # test
     - name: Test Cygwin
       run: >-
@@ -169,8 +181,12 @@ jobs:
         export MAKEFLAGS=-j$(nproc) &&
         cd build &&
         (export PATH=${{ matrix.target }}/winsup/testsuite/testinst/bin:${PATH} && cmd /c $(cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver) &) &&
-        (cd ${{ matrix.target }}/winsup; make check AM_COLOR_TESTS=always)
+        (cd ${{ matrix.target }}/winsup; make check AM_COLOR_TESTS=always
+        CFLAGS="-D__MSYS__"
+        CXXFLAGS="-D__MSYS__"
+        CCASFLAGS="-D__MSYS__")
       shell: C:\cygwin\bin\bash.exe --noprofile --norc -eo pipefail '{0}'
+
 
     # upload test logs to facilitate investigation of problems
     - name: Upload test logs
