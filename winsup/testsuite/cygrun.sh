@@ -13,5 +13,5 @@ then
     windows_runtime_root=$(cygpath -m $runtime_root)
     $cygrun "$exe -v -cygwin $windows_runtime_root/cygwin1.dll"
 else
-    cygdrop $cygrun $exe
+    $cygrun $exe
 fi
