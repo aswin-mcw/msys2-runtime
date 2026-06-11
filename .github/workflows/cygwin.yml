@@ -20,29 +20,24 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    # install build tools
     - name: Install build tools
       run: |
         dnf install -y autoconf automake gawk make patch perl mingw${{ matrix.pkgarch }}-gcc-c++ mingw${{ matrix.pkgarch }}-winpthreads-static mingw${{ matrix.pkgarch }}-zlib-static
 
-    # enable 'dnf copr'
     - name: Enable 'dnf copr'
       run: |
         dnf install -y dnf-plugins-core
 
-    # install cross-cygwin toolchain and libs from copr
     - name: Install cross-cygwin toolchain and libs and cocom from copr
       run: |
         dnf copr enable -y yselkowitz/cygwin
         dnf install -y cygwin${{ matrix.pkgarch }}-gcc-c++ cygwin${{ matrix.pkgarch }}-gettext cygwin${{ matrix.pkgarch }}-libbfd cygwin${{ matrix.pkgarch }}-libiconv cygwin${{ matrix.pkgarch }}-zlib cocom
 
-    # install doc tools
     - name: Install doc tools
       run: |
         dnf install -y dblatex docbook2X docbook-xsl xmlto python3 python3-lxml python3-ply openssh-clients
         fmtutil-sys --byfmt pdflatex && texhash
 
-    # build
     - name: Configure, build and install
       run: |
         mkdir build install
@@ -59,7 +54,6 @@ jobs:
         make -C build install
         make -C build/*/newlib install-info install-man
 
-    # deploy documentation
     - name: Deploy documentation
       env:
         SSH_AUTH_SOCK: /tmp/ssh_agent.sock
@@ -96,14 +90,14 @@ jobs:
     steps:
     - run: git config --global core.autocrlf input
 
+    - uses: actions/checkout@v4
+
     - name: adjust permissions
       run: |
         icacls . /inheritance:r
         icacls . /grant Administrators:F
+        icacls . /grant "BUILTIN\Users:F"
 
-    - uses: actions/checkout@v3
-
-    # install MSYS2 and build tools
     - name: Install MSYS2
       uses: msys2/setup-msys2@v2
       with:
@@ -131,7 +125,6 @@ jobs:
           docbook-xsl
           git
 
-    # build
     - name: Build
       shell: msys2 {0}
       run: |
@@ -150,34 +143,36 @@ jobs:
         (cd */newlib; make info man)
         (cd */newlib; make install-info install-man)
 
-    # verify crt0.o is the MSYS2 version before running tests
     - name: Verify crt0.o
       shell: msys2 {0}
       run: |
         echo "=== crt0.o symbols ==="
         nm /usr/lib/crt0.o | grep -i crt0 || true
         if nm /usr/lib/crt0.o | grep -q "cygwin_crt0"; then
-          echo "ERROR: crt0.o is from Cygwin not MSYS2, something is wrong"
+          echo "ERROR: crt0.o is from Cygwin not MSYS2"
           exit 1
         else
           echo "OK: crt0.o correctly references msys_crt0"
         fi
 
-    # test
     - name: Test
       shell: msys2 {0}
       run: |
         export MAKEFLAGS=-j$(nproc)
         cd build
-        export PATH=$(realpath ${{ matrix.target }}/winsup/testsuite/testinst/bin):${PATH}
-        (cmd /c $(cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver) &)
+        # Use fallback if testinst dir doesn't exist yet
+        TESTINST=$(realpath ${{ matrix.target }}/winsup/testsuite/testinst/bin 2>/dev/null \
+          || echo "${{ matrix.target }}/winsup/testsuite/testinst/bin")
+        export PATH="${TESTINST}:${PATH}"
+        # Start cygserver in background
+        cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver \
+          | xargs cmd /c &
         cd ${{ matrix.target }}/winsup
         make check AM_COLOR_TESTS=always \
           CFLAGS="-D__MSYS__" \
           CXXFLAGS="-D__MSYS__" \
           CCASFLAGS="-D__MSYS__"
 
-    # upload test logs to facilitate investigation of problems
     - name: Upload test logs
       uses: actions/upload-artifact@v4
       with:
@@ -187,7 +182,6 @@ jobs:
           build/${{ matrix.target }}/winsup/testsuite/**/*.trs
       if: ${{ !cancelled() }}
 
-    # no longer needed since we use MSYS2 not Cygwin, but kept as safety measure
     - name: Avoid actions/checkout post-run step using Cygwin git
       run: bash -c 'rm /usr/bin/git.exe'
       continue-on-error: true
