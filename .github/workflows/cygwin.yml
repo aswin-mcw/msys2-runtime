@@ -74,20 +74,36 @@ jobs:
       shell: msys2 {0}
       run: |
         export MAKEFLAGS=-j$(nproc)
-        cd build
-        # Point PATH to staged runtime so tests use our built DLL
-        DESTDIR=$(realpath ../_dest)
-        TESTINST=$(realpath ${{ matrix.target }}/winsup/testsuite/testinst/bin 2>/dev/null \
-          || echo "${{ matrix.target }}/winsup/testsuite/testinst/bin")
-        export PATH="${DESTDIR}/usr/bin:${TESTINST}:${PATH}"
-        # Start cygserver from staged install
-        cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver \
-          | xargs cmd /c &
-        cd ${{ matrix.target }}/winsup
-        make check AM_COLOR_TESTS=always \
-          CFLAGS="-D__MSYS__" \
-          CXXFLAGS="-D__MSYS__" \
-          CCASFLAGS="-D__MSYS__"
+
+        # Paths derived from matrix.target
+        BUILDDIR=$(realpath build/${{ matrix.target }}/winsup)
+        TESTSUITE_BUILDDIR="${BUILDDIR}/testsuite"
+        CYGWIN_BUILDDIR="${BUILDDIR}/cygwin"
+
+        # Align with: export runtime_root=$(abs_builddir)/testinst/bin
+        # testinst/bin must contain our built msys-2.0.dll
+        mkdir -p "${TESTSUITE_BUILDDIR}/testinst/bin"
+        cp "${CYGWIN_BUILDDIR}/new-msys-2.0.dll" \
+           "${TESTSUITE_BUILDDIR}/testinst/bin/msys-2.0.dll"
+
+        # Align with: export cygrun=$(builddir)/mingw/cygrun
+        # cygrun is built under testsuite/mingw/ by make
+        # verify it exists before proceeding
+        ls "${TESTSUITE_BUILDDIR}/mingw/cygrun.exe" || \
+          { echo "ERROR: cygrun.exe not found, mingw subdir may not have been built"; exit 1; }
+
+        # Start cygserver — required for IPC tests (shmtest, semtest, msgtest)
+        "${BUILDDIR}/cygserver/cygserver" &
+        sleep 2
+
+        # Run make check from the testsuite build directory
+        # Makefile sets:
+        #   LOG_COMPILER = cygrun.sh        (wraps each test)
+        #   runtime_root = testinst/bin     (where our DLL lives)
+        #   cygrun       = mingw/cygrun     (test runner binary)
+        # All of these are handled automatically by make check
+        cd "${TESTSUITE_BUILDDIR}"
+        make check AM_COLOR_TESTS=always
 
     - name: Upload install
       uses: actions/upload-artifact@v4
