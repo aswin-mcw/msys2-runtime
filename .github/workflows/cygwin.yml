@@ -1,78 +1,83 @@
-windows-build:
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - target: x86_64-pc-cygwin
-          pkgarch: x86_64
-    name: Windows native ${{ matrix.pkgarch }}
+name: cygwin
 
-    steps:
-    - run: git config --global core.autocrlf input
+on: workflow_dispatch
 
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+jobs:
+    windows-build:
+        runs-on: windows-latest
+        strategy:
+          fail-fast: false
+          matrix:
+            include:
+            - target: x86_64-pc-cygwin
+              pkgarch: x86_64
+        name: Windows native ${{ matrix.pkgarch }}
 
-    - name: Install MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MSYS
-        update: true
-        install: >-
-          msys2-devel
-          base-devel
-          autotools
-          cocom
-          dejagnu
-          gcc
-          gettext-devel
-          libiconv-devel
-          libzstd-devel
-          make
-          mingw-w64-cross-crt
-          mingw-w64-cross-gcc
-          mingw-w64-cross-zlib
-          perl
-          zlib-devel
+        steps:
+        - run: git config --global core.autocrlf input
 
-    - name: Build
-      shell: msys2 {0}
-      run: |
-        (cd winsup && ./autogen.sh)
-        mkdir build && cd build
-        ../configure \
-          --prefix=/usr \
-          --disable-doc \
-          CFLAGS="-D__MSYS__" \
-          CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
-          CCASFLAGS="-D__MSYS__" \
-          MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
-        make -j$(nproc)
-        make install
+        - uses: actions/checkout@v4
+          with:
+            fetch-depth: 1
 
-    - name: Test
-      shell: msys2 {0}
-      run: |
-        export MAKEFLAGS=-j$(nproc)
-        cd build
-        TESTINST=$(realpath ${{ matrix.target }}/winsup/testsuite/testinst/bin 2>/dev/null \
-          || echo "${{ matrix.target }}/winsup/testsuite/testinst/bin")
-        export PATH="${TESTINST}:${PATH}"
-        cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver \
-          | xargs cmd /c &
-        cd ${{ matrix.target }}/winsup
-        make check AM_COLOR_TESTS=always \
-          CFLAGS="-D__MSYS__" \
-          CXXFLAGS="-D__MSYS__" \
-          CCASFLAGS="-D__MSYS__"
+        - name: Install MSYS2
+          uses: msys2/setup-msys2@v2
+          with:
+            msystem: MSYS
+            update: true
+            install: >-
+              msys2-devel
+              base-devel
+              autotools
+              cocom
+              dejagnu
+              gcc
+              gettext-devel
+              libiconv-devel
+              libzstd-devel
+              make
+              mingw-w64-cross-crt
+              mingw-w64-cross-gcc
+              mingw-w64-cross-zlib
+              perl
+              zlib-devel
 
-    - name: Upload test logs
-      uses: actions/upload-artifact@v4
-      with:
-        name: testlogs
-        path: |
-          build/${{ matrix.target }}/winsup/testsuite/**/*.log
-          build/${{ matrix.target }}/winsup/testsuite/**/*.trs
-      if: ${{ !cancelled() }}
+        - name: Build
+          shell: msys2 {0}
+          run: |
+            (cd winsup && ./autogen.sh)
+            mkdir build && cd build
+            ../configure \
+              --prefix=/usr \
+              --disable-doc \
+              CFLAGS="-D__MSYS__" \
+              CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
+              CCASFLAGS="-D__MSYS__" \
+              MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
+            make -j$(nproc)
+            make install
+
+        - name: Test
+          shell: msys2 {0}
+          run: |
+            export MAKEFLAGS=-j$(nproc)
+            cd build
+            TESTINST=$(realpath ${{ matrix.target }}/winsup/testsuite/testinst/bin 2>/dev/null \
+              || echo "${{ matrix.target }}/winsup/testsuite/testinst/bin")
+            export PATH="${TESTINST}:${PATH}"
+            cygpath -wa ${{ matrix.target }}/winsup/cygserver/cygserver \
+              | xargs cmd /c &
+            cd ${{ matrix.target }}/winsup
+            make check AM_COLOR_TESTS=always \
+              CFLAGS="-D__MSYS__" \
+              CXXFLAGS="-D__MSYS__" \
+              CCASFLAGS="-D__MSYS__"
+
+        - name: Upload test logs
+          uses: actions/upload-artifact@v4
+          with:
+            name: testlogs
+            path: |
+              build/${{ matrix.target }}/winsup/testsuite/**/*.log
+              build/${{ matrix.target }}/winsup/testsuite/**/*.trs
+          if: ${{ !cancelled() }}
