@@ -103,7 +103,8 @@ jobs:
         #   cygrun       = mingw/cygrun     (test runner binary)
         # All of these are handled automatically by make check
         cd "${TESTSUITE_BUILDDIR}"
-        make check AM_COLOR_TESTS=always
+        LC_ALL=C make check AM_CFLAGS="-std=gnu89 -w" CFLAGS="-O2 -pipe -ggdb -std=gnu89 -w"
+ 
 
     - name: Upload install
       uses: actions/upload-artifact@v4
