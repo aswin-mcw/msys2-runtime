@@ -1,7 +1,5 @@
-name: cygwin
-
+name: msys2
 on: workflow_dispatch
-
 jobs:
   windows-build:
     runs-on: windows-latest
@@ -9,105 +7,157 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - target: x86_64-pc-cygwin
-          pkgarch: x86_64
+          - target: x86_64-pc-msys
+            pkgarch: x86_64
     name: Windows native ${{ matrix.pkgarch }}
-
     steps:
-    - run: git config --global core.autocrlf input
+      # Align with Cygwin: prevent git from mangling line endings
+      - run: git config --global core.autocrlf input
 
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+      # Align with Cygwin: remove inheritable permissions that break
+      # testsuite assumptions about file modes
+      - name: Adjust permissions
+        run: |
+          icacls . /inheritance:r
+          icacls . /grant Administrators:F
 
-    - name: Install MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MSYS
-        update: true
-        install: >-
-          msys2-devel
-          base-devel
-          autotools
-          cocom
-          dejagnu
-          gcc
-          gettext-devel
-          libiconv-devel
-          libzstd-devel
-          make
-          mingw-w64-cross-crt
-          mingw-w64-cross-gcc
-          mingw-w64-cross-zlib
-          perl
-          zlib-devel
-    - name: Patch unused variable warning
-      shell: msys2 {0}
-      run: |
-        sed -i 's/int count_path_items = 0;/int count_path_items = 0; (void)count_path_items;/' winsup/utils/mingw/cygcheck.cc
-    - name: Build
-      shell: msys2 {0}
-      run: |
-        (cd winsup && ./autogen.sh)
-        mkdir build && cd build
-        ../configure \
-          --prefix=/usr \
-          --disable-doc \
-          --disable-dumper \
-          CFLAGS="-D__MSYS__" \
-          CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
-          CCASFLAGS="-D__MSYS__" \
-          MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
-        make -j$(nproc) MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
-    - name: Install to staging directory
-      shell: msys2 {0}
-      run: |
-        cd build
-        # Install to _dest, never directly to /usr
-        # avoids fork failure from overwriting the running msys-2.0.dll
-        make DESTDIR="$(pwd)/../_dest" install
-    - name: Test
-      shell: msys2 {0}
-      run: |
-        export MAKEFLAGS=-j$(nproc)
-        # Paths derived from matrix.target
-        BUILDDIR=$(realpath build/${{ matrix.target }}/winsup)
-        TESTSUITE_BUILDDIR="${BUILDDIR}/testsuite"
-        CYGWIN_BUILDDIR="${BUILDDIR}/cygwin"
-        # Align with: export runtime_root=$(abs_builddir)/testinst/bin
-        # testinst/bin must contain our built msys-2.0.dll
-        mkdir -p "${TESTSUITE_BUILDDIR}/testinst/bin"
-        cp "${CYGWIN_BUILDDIR}/new-msys-2.0.dll" \
-           "${TESTSUITE_BUILDDIR}/testinst/bin/msys-2.0.dll"
-        # Align with: export cygrun=$(builddir)/mingw/cygrun
-        # cygrun is built under testsuite/mingw/ by make
-        # verify it exists before proceeding
-        ls "${TESTSUITE_BUILDDIR}/mingw/cygrun.exe" || \
-          { echo "ERROR: cygrun.exe not found, mingw subdir may not have been built"; exit 1; }
-        # Start cygserver — required for IPC tests (shmtest, semtest, msgtest)
-        "${BUILDDIR}/cygserver/cygserver" &
-        sleep 2
-        # Run make check from the testsuite build directory
-        # Makefile sets:
-        #   LOG_COMPILER = cygrun.sh        (wraps each test)
-        #   runtime_root = testinst/bin     (where our DLL lives)
-        #   cygrun       = mingw/cygrun     (test runner binary)
-        # All of these are handled automatically by make check
-        cd "${TESTSUITE_BUILDDIR}"
-        LC_ALL=C make check AM_CFLAGS="-std=gnu89 -w" CFLAGS="-O2 -pipe -ggdb -std=gnu89 -w"
- 
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Upload install
-      uses: actions/upload-artifact@v4
-      with:
-        name: install
-        path: _dest/
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: >-
+            msys2-devel
+            base-devel
+            autotools
+            cocom
+            dejagnu
+            gcc
+            gettext-devel
+            libiconv-devel
+            libzstd-devel
+            make
+            mingw-w64-cross-crt
+            mingw-w64-cross-gcc
+            mingw-w64-cross-zlib
+            perl
+            zlib-devel
 
-    - name: Upload test logs
-      uses: actions/upload-artifact@v4
-      with:
-        name: testlogs
-        path: |
-          build/${{ matrix.target }}/winsup/testsuite/**/*.log
-          build/${{ matrix.target }}/winsup/testsuite/**/*.trs
-      if: ${{ !cancelled() }}
+      - name: Patch unused variable warning
+        shell: msys2 {0}
+        run: |
+          sed -i 's/int count_path_items = 0;/int count_path_items = 0; (void)count_path_items;/' \
+            winsup/utils/mingw/cygcheck.cc
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          # Align with Cygwin: sanitize PATH to prevent Windows-native tools bleeding in
+          export PATH=/usr/bin:/usr/local/bin:$(cygpath -u "$SYSTEMROOT")/system32
+
+          (cd winsup && ./autogen.sh)
+          mkdir build && cd build
+          ../configure \
+            --prefix=/usr \
+            --disable-doc \
+            --disable-dumper \
+            CFLAGS="-D__MSYS__" \
+            CXXFLAGS="-D__MSYS__ -Wno-error=unused-but-set-variable" \
+            CCASFLAGS="-D__MSYS__" \
+            MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
+          make -j$(nproc) MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
+
+      - name: Install to staging directory
+        shell: msys2 {0}
+        run: |
+          export PATH=/usr/bin:/usr/local/bin:$(cygpath -u "$SYSTEMROOT")/system32
+
+          cd build
+          # Install to _dest, never directly to /usr —
+          # avoids fork failure from overwriting the running msys-2.0.dll
+          make DESTDIR="$(pwd)/../_dest" install
+
+      # Align with Cygwin: build and install newlib info/man pages
+      - name: Build and install newlib docs
+        shell: msys2 {0}
+        run: |
+          export PATH=/usr/bin:/usr/local/bin:$(cygpath -u "$SYSTEMROOT")/system32
+
+          cd build
+          (cd */newlib && make info man)
+          (cd */newlib && make install-info install-man DESTDIR="$(pwd)/../../_dest")
+
+      - name: Test
+        shell: msys2 {0}
+        run: |
+          # Align with Cygwin: sanitize PATH to prevent Windows-native tools bleeding in
+          export PATH=/usr/bin:/usr/local/bin:$(cygpath -u "$SYSTEMROOT")/system32
+          export MAKEFLAGS=-j$(nproc)
+
+          # Paths derived from matrix.target
+          BUILDDIR=$(realpath build/${{ matrix.target }}/winsup)
+          TESTSUITE_BUILDDIR="${BUILDDIR}/testsuite"
+          CYGWIN_BUILDDIR="${BUILDDIR}/cygwin"
+
+          # Align with Cygwin: testinst/bin must contain our built msys-2.0.dll
+          mkdir -p "${TESTSUITE_BUILDDIR}/testinst/bin"
+          cp "${CYGWIN_BUILDDIR}/new-msys-2.0.dll" \
+             "${TESTSUITE_BUILDDIR}/testinst/bin/msys-2.0.dll"
+
+          # Verify cygrun exists before proceeding
+          ls "${TESTSUITE_BUILDDIR}/mingw/cygrun.exe" || \
+            { echo "ERROR: cygrun.exe not found, mingw subdir may not have been built"; exit 1; }
+
+          # Start cygserver — required for IPC tests (shmtest, semtest, msgtest)
+          # Align with Cygwin: use a readiness poll instead of bare sleep
+          "${BUILDDIR}/cygserver/cygserver" &
+          CYGSERVER_PID=$!
+          echo "Waiting for cygserver (PID $CYGSERVER_PID) to be ready..."
+          for i in $(seq 10); do
+            sleep 1
+            if kill -0 "$CYGSERVER_PID" 2>/dev/null; then
+              echo "cygserver is up after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 10 ]; then
+              echo "ERROR: cygserver failed to start within 10s"
+              exit 1
+            fi
+          done
+
+          # Run make check from the testsuite build directory.
+          # Makefile sets:
+          #   LOG_COMPILER = cygrun.sh     (wraps each test)
+          #   runtime_root = testinst/bin  (where our DLL lives)
+          #   cygrun       = mingw/cygrun  (test runner binary)
+          # All of these are handled automatically by make check.
+          cd "${TESTSUITE_BUILDDIR}"
+          LC_ALL=C make check AM_COLOR_TESTS=always \
+            AM_CFLAGS="-std=gnu89 -w" \
+            CFLAGS="-O2 -pipe -ggdb -std=gnu89 -w"
+
+      - name: Upload install
+        uses: actions/upload-artifact@v4
+        with:
+          name: install
+          path: _dest/
+
+      - name: Upload test logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs
+          path: |
+            build/${{ matrix.target }}/winsup/testsuite/**/*.log
+            build/${{ matrix.target }}/winsup/testsuite/**/*.trs
+        if: ${{ !cancelled() }}
+
+      # Align with Cygwin: prevent actions/checkout post-run step from
+      # using MSYS2's git instead of the native Windows git, which causes
+      # post-job failures
+      - name: Avoid actions/checkout post-run step using MSYS2 git
+        run: bash -c 'rm /usr/bin/git.exe'
+        shell: C:\msys64\usr\bin\bash.exe --noprofile --norc -eo pipefail '{0}'
