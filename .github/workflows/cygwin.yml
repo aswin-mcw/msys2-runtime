@@ -141,7 +141,7 @@ jobs:
         ../configure \
           --prefix=/usr \
           --disable-doc \
-          --disable-dumper \
+          --disable-dumper
         make -j$(nproc) MINGW_CXXFLAGS="-Wno-error=unused-but-set-variable"
     - name: Install to staging directory
       shell: msys2 {0}
